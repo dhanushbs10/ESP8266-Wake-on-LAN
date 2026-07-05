@@ -14,7 +14,7 @@ A wireless remote PC power-on button using a **NodeMCU ESP8266**, **Wake-on-LAN 
 **Perfect for:** Home servers, gaming PCs, workstations, or any desktop you want to power on remotely.
 
 <div align="center">
-  <img src="images/device-photo.jpg" alt="ESP8266 WOL Device" width="400"/>
+  
   <p><em>Fig 1: Complete device with 16x2 LCD and touch sensor</em></p>
 </div>
 
