@@ -15,8 +15,7 @@ A wireless remote PC power-on button using a **NodeMCU ESP8266**, **Wake-on-LAN 
 
 <div align="center">
   
-  <p><em>Fig 1: Complete device with 16x2 LCD and touch sensor</em></p>
-</div>
+  >
 
 ---
 
