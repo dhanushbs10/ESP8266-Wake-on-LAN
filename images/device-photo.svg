@@ -1,0 +1,12 @@
+<svg width="400" height="300" xmlns="http://www.w3.org/2000/svg">
+  <rect width="100%" height="100%" fill="#2a2a2a"/>
+  <text x="50%" y="45%" font-family="Arial, sans-serif" font-size="20" text-anchor="middle" fill="#4CAF50">
+    Photo Placeholder
+  </text>
+  <text x="50%" y="55%" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#888">
+    Add photo of assembled device here
+  </text>
+  <text x="50%" y="75%" font-family="monospace" font-size="11" text-anchor="middle" fill="#666">
+    images/device-photo.jpg
+  </text>
+</svg>
