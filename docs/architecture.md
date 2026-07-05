@@ -17,15 +17,10 @@ This document explains the software architecture, design patterns, and code stru
 │                              │  ┌──────────────────────┐  │ │
 │                              │  │   State Machine      │  │ │
 │                              │  │  ┌──────────────┐    │  │ │
-│                              │  │  │ INITIALIZING │    │  │ │
-│                              │  │  │ WIFI_        │    │  │ │
-│                              │  │  │ CONNECTING   │◄───┘  │ │
-│                              │  │  │ WIFI_        │      │ │
-│                              │  │  │ CONNECTED    │      │ │
-│                              │  │  │ WIFI_        │      │ │
-│                              │  │  │ DISCONNECTED │      │ │
-│                              │  │  │ WAKE_        │      │ │
-│                              │  │  │ TRIGGERED    │      │ │
+│                              │  │  │ SETUP        │    │  │ │
+│                              │  │  │ WIFI_CONNECT │◄───┘  │ │
+│                              │  │  │ READY        │      │ │
+│                              │  │  │ WAKING       │      │ │
 │                              │  │  │ ERROR        │      │ │
 │                              │  │  └──────────────┘    │  │
 │                              │  └──────────────────────┘  │ │
@@ -42,7 +37,7 @@ This document explains the software architecture, design patterns, and code stru
 ├────────────────────────────────────────────┼────────────────┤
 │                 Hardware Layer               │                │
 ├────────────────────────────────────────────┼────────────────┤
-│  Touch Sensor    OLED Display     WiFi      │   WOL Packets  │
+│  Touch Sensor    16x2 LCD       WiFi      │   WOL Packets  │
 └────────────────────────────────────────────┴────────────────┘
 ```
 
@@ -54,70 +49,78 @@ This document explains the software architecture, design patterns, and code stru
 
 #### 1. **Config.h** - Configuration Layer
 All user-customizable settings in one place:
-- WiFi credentials
-- Target MAC address
-- Pin assignments
-- Timing constants
-- Display settings
+- WiFi credentials (`WIFI_SSID`, `WIFI_PASSWORD`)
+- Target MAC address (`TARGET_MAC[6]`)
+- Pin assignments (`TOUCH_PIN = 12` for D6)
+- LCD settings (`LCD_I2C_ADDRESS`, `LCD_COLS`, `LCD_ROWS`)
+- Timing constants (debounce, delays, timeouts)
 
-**Design principle:** Configuration separated from logic for easy customization.
+**Design principle:** Configuration separated from logic for easy customization. Users never need to modify the `.ino` file.
 
 #### 2. **ESP8266-Wake-on-LAN.ino** - Application Layer
 
 ##### Global Objects
 ```cpp
-Adafruit_SSD1306 display  // OLED display driver
-WiFiUDP udp                // UDP socket
-WakeOnLan WOL(udp)         // WOL packet generator
+LiquidCrystal_I2C lcd    // 16x2 LCD driver (I2C address 0x27)
+WiFiUDP udp              // UDP socket
+WakeOnLan WOL(udp)       // WOL packet generator
 ```
 
-##### State Machine (`AppState` enum)
+##### State Machine (`State` enum)
 The application uses a **finite state machine** (FSM) design:
 
 | State | Description | Transitions To |
 |-------|-------------|----------------|
-| `INITIALIZING` | Startup, hardware init | WIFI_CONNECTING (or ERROR) |
-| `WIFI_CONNECTING` | WiFi connection attempt | WIFI_CONNECTED or ERROR |
-| `WIFI_CONNECTED` | Ready state, waiting for touch | WAKE_TRIGGERED |
-| `WIFI_DISCONNECTED` | WiFi lost, reconnect active | WIFI_CONNECTING |
-| `WAKE_TRIGGERED` | Sending WOL packet | WIFI_CONNECTED |
+| `SETUP` | Initialization | `WIFI_CONNECT` or `ERROR` |
+| `WIFI_CONNECT` | Attempting WiFi connection | `READY` or `ERROR` |
+| `READY` | WiFi connected, waiting for touch | `WAKING` |
+| `WAKING` | Sending WOL packet, showing message | `READY` (or `WIFI_CONNECT` if WiFi lost) |
 | `ERROR` | Hardware/config error | Manual reset |
 
 **Benefits:** Predictable behavior, easy to debug, clear flow.
 
-##### Display Modes (`DisplayMode` enum)
-- `NORMAL`: Shows WiFi status and idle message
-- `WAKING`: Shows wake-up animation
-- `ERROR`: Shows error text
+##### Display Modes (`DispMode` enum)
+- `NORMAL`: Shows WiFi status on line 1, state on line 2
+- `WAKING`: Shows "WiFi Connected" / "WAKING PC..."
+- `ERR`: Shows "ERROR" and error message
 
 ##### Key Functions
 
 | Function | Purpose | Blocking? |
 |----------|---------|-----------|
-| `setup()` | Initialize hardware, connect WiFi | Yes (short) |
+| `setup()` | Initialize hardware, connect WiFi | Yes (short, acceptable) |
 | `loop()` | Main state machine, non-blocking | No |
-| `updateDisplay()` | Render OLED with caching | No (partial) |
-| `checkTouchSensor()` | Debounced edge detection | No |
-| `sendWakePacket()` | Send WOL magic packet | Yes (brief) |
-| `handleWiFiConnection()` | Auto-reconnect logic | No |
-| `connectToWiFi()` | Blocking WiFi connect with timeout | Yes |
+| `updateDisplay()` | Render LCD with caching | No (only if content changed) |
+| `touchPressed()` | Debounced edge detection | No |
+| `sendWol()` | Send WOL magic packet | Yes (brief, ~300ms) |
+| `wifiMonitor()` | Auto-reconnect logic | No |
+| `wifiConnect()` | Blocking WiFi connect with timeout | Yes, but with yield |
 
 ---
 
 ## Design Patterns
 
 ### 1. **State Pattern**
-The `AppState` and `DisplayMode` enums encapsulate different application states, making the code easier to extend and modify.
+The `State` and `DispMode` enums encapsulate different application states, making the code easy to extend and modify.
 
-### 2. **Singleton Display**
-The OLED display is a global object initialized once. Draw operations use caching (compare before clear) to prevent flicker.
+### 2. **Display Caching**
+The LCD driver is a global object. Draw operations cache the last strings and only update when content changes to prevent flicker:
+
+```cpp
+if (line1 != lastLine1 || line2 != lastLine2) {
+  lcd.clear();
+  lcd.setCursor(0,0); lcd.print(line1);
+  lcd.setCursor(0,1); lcd.print(line2);
+  lastLine1 = line1; lastLine2 = line2;
+}
+```
 
 ### 3. **Debounced Input**
 Touch sensor uses edge detection + time-based debounce:
 ```cpp
-if (currentReading == HIGH && lastReading == LOW) {
-  if (millis() - lastChange >= DEBOUNCE_MS) {
-    // Valid press
+if (currentReading == HIGH && lastTouchReading == LOW) {
+  if (millis() - lastTouchMs >= DEBOUNCE_MS) {
+    return true;  // Valid press
   }
 }
 ```
@@ -126,13 +129,20 @@ if (currentReading == HIGH && lastReading == LOW) {
 All delays use `millis()` instead of `delay()`:
 ```cpp
 // Instead of: delay(3000);
-if (millis() - startTime >= 3000) { /* done */ }
+wakeEndMs = millis() + 3000;
+// Later:
+if (millis() >= wakeEndMs) { /* done */ }
 ```
 
-This allows WiFi background tasks to run smoothly.
+This allows WiFi background tasks to run smoothly and keeps the system responsive.
 
 ### 5. **Configuration Centralization**
-All tunable parameters live in `Config.h`. No magic numbers scattered in code.
+All tunable parameters live in `Config.h`. No magic numbers scattered in code. Users can adjust:
+- WiFi credentials
+- MAC address
+- Pin mapping
+- Timing constants
+- LCD I2C address
 
 ---
 
@@ -140,17 +150,18 @@ All tunable parameters live in `Config.h`. No magic numbers scattered in code.
 
 ```
 ┌────────────────────────────────────────────────┐
-│   Every loop():                                │
+│   Each loop():                                 │
 │   ┌──────────────────────────────────────────┐│
 │   │ WiFi.status() == WL_CONNECTED?          ││
-│   │       YES → State = WIFI_CONNECTED      ││
-│   │       NO  → Try reconnect every 1000ms  ││
+│   │       YES → State = READY               ││
+│   │       NO  → Enter reconnect mode       ││
 │   └──────────────────────────────────────────┘│
 │                                                │
-│   If reconnect succeeds:                       │
-│   - Update WOL broadcast address              │
-│   - Change state to WIFI_CONNECTED            │
-│   - Update display                            │
+│   Reconnect attempts:                          │
+│   - Try every 1000ms                          │
+│   - Call wifiConnect() with 30s timeout      │
+│   - Success: Update WOL broadcast, return    ││
+│     to READY state                            │
 └────────────────────────────────────────────────┘
 ```
 
@@ -158,34 +169,41 @@ All tunable parameters live in `Config.h`. No magic numbers scattered in code.
 
 ## Wake-on-LAN Packet Structure
 
-WakeOnLan library handles this, but for reference:
+WakeOnLan library handles packet construction. For reference:
 
 **Magic Packet Format:**
 - 6 bytes of `0xFF` (sync stream)
 - Target MAC repeated 16 times (96 bytes total)
-- UDP port 9 (discard port) or 7 (echo)
+- UDP port 9 (discard) or 7 (echo)
+- Broadcast to network
 
 Our configuration:
 ```cpp
-WOL.setRepeat(3, 100);  // Send 3 times, 100ms between packets
+WOL.setRepeat(3, 100);  // Send 3 packets, 100ms between each
 ```
 
 ---
 
-## Display Refresh Strategy
+## LCD Display Layout
 
-To prevent OLED flicker and reduce CPU:
+16x2 character LCD organized as:
 
-1. **Caching:** Last status/action strings are stored
-2. **Conditional update:** Only redraw if content changed
-3. **Batch operations:** Clear once, write all text, then display()
+```
+Line 1: Status (WiFi Connected, NO WiFi, ERROR, Connecting WiFi...)
+Line 2: Current Action (Ready to Touch, WAKING PC..., Packet Sent!, Reconnecting...)
+```
 
-```cpp
-if (statusText != lastStatus || actionText != lastAction) {
-  clearDisplay();
-  drawEverything();
-  display();
-}
+Example flow:
+```
+Line 1: Connecting WiFi...    Line 2: (blank)
+  ↓ (WiFi connected)
+Line 1: WiFi Connected        Line 2: Ready to Touch
+  ↓ (touch pressed)
+Line 1: WiFi Connected        Line 2: WAKING PC...
+  ↓ (packet sent)
+Line 1: WiFi Connected        Line 2: Packet Sent!
+  ↓ (after delay)
+Line 1: WiFi Connected        Line 2: Ready to Touch
 ```
 
 ---
@@ -194,12 +212,12 @@ if (statusText != lastStatus || actionText != lastAction) {
 
 | Error Type | Detection | Response |
 |------------|-----------|----------|
-| OLED init fail | `display.begin()` returns false | Set ERROR state, halt |
-| WiFi timeout | `connectToWiFi()` returns false | Set ERROR state |
-| WiFi disconnect | `WiFi.status() != WL_CONNECTED` | Auto-reconnect state |
-| Invalid pin | `digitalRead()` on unconfigured pin | Undefined - avoid |
+| LCD init fail | `lcd.init()` returns false | Set ERROR state, show "LCD Error" |
+| WiFi timeout | `wifiConnect()` returns false | Set ERROR state, show "WiFi Failed" |
+| WiFi disconnect | `WiFi.status() != WL_CONNECTED` | Auto-reconnect, show "Reconnecting..." |
+| Invalid pin | `digitalRead()` on wrong pin | Undefined - avoid by correct wiring |
 
-Errors are logged to Serial at 115200 baud.
+All errors are logged to Serial at 115200 baud for debugging.
 
 ---
 
@@ -207,21 +225,21 @@ Errors are logged to Serial at 115200 baud.
 
 | Resource | Usage | Notes |
 |----------|-------|-------|
-| Flash | ~150-200 KB | Code + libraries |
-| RAM | ~15-25 KB | Global buffers, display cache |
+| Flash | ~180-220 KB | Code + LiquidCrystal_I2C + WakeOnLan libraries |
+| RAM | ~20-30 KB | Global buffers, LCD buffer, WiFi stack |
 | Stack | ~2 KB | Function call overhead |
 
-**Note:** ESP8266 has ~80KB RAM, ~4MB flash. This sketch is well within limits.
+**Note:** ESP8266 NodeMCU has ~80KB RAM, ~4MB flash. This sketch is well within limits.
 
 ---
 
 ## Performance Considerations
 
-- **Loop time:** ~1-10ms (mostly WiFi background processing)
-- **Touch latency:** Debounce (200ms) + state processing (<10ms)
-- **WOL send:** ~300ms (3 packets × 100ms interval)
-- **Display refresh:** ~50ms per update
-- **WiFi reconnect:** Up to 30s timeout (configurable)
+- **Loop time:** ~1-5ms (WiFi background tasks)
+- **Touch latency:** Debounce (200ms) + edge detection (<10ms)
+- **WOL send:** ~300ms total (3 packets × 100ms interval)
+- **LCD refresh:** ~20ms per update (only when changed)
+- **WiFi reconnect:** Attempt every 1s, up to 30s timeout
 
 ---
 
@@ -230,14 +248,14 @@ Errors are logged to Serial at 115200 baud.
 ### Unit Testing (not implemented)
 - Test debounce logic with simulated inputs
 - Test state transitions programmatically
-- Validate MAC address parsing
+- Validate MAC address format in Config.h
 
 ### Integration Testing (manual)
 1. Upload sketch, verify Serial output
-2. Verify OLED shows "CONNECTED" after WiFi
-3. Press touch, verify WOL packet on network analyzer
-4. Unplug WiFi, verify auto-reconnect
-5. Disconnect touch sensor, verify ERROR state
+2. Verify LCD shows "WiFi Connected" after connection
+3. Touch sensor triggers WOL packet (use Wireshark to verify)
+4. Unplug/replug WiFi, verify auto-reconnect
+5. Disconnect touch sensor wire, verify ERROR state
 
 ---
 
@@ -247,24 +265,25 @@ Easy modifications for users:
 
 | Feature | Where to modify | Difficulty |
 |---------|----------------|------------|
-| Change touch pin | `Config.h: TOUCH_PIN` | Easy |
+| Change touch pin | `Config.h: TOUCH_PIN` (currently 12) | Easy |
 | Adjust debounce | `Config.h: TOUCH_DEBOUNCE_MS` | Easy |
-| Change OLED I2C address | `Config.h: OLED_I2C_ADDRESS` | Easy |
-| Add LED indicator | Add `pinMode(LED_PIN, OUTPUT)` in setup() | Easy |
+| Change LCD I2C address | `Config.h: LCD_I2C_ADDRESS` | Easy |
+| Add status LED | Add `pinMode(LED_PIN, OUTPUT)` in `setup()` | Easy |
 | Deep sleep mode | Modify `loop()` to call `ESP.deepSleep()` | Medium |
 | Web interface | Add AsyncWebServer library, handlers | Hard |
 | OTA updates | Add ArduinoOTA library calls | Medium |
-| Multiple PCs | State tracking, different MACs per tap count | Medium |
+| Multiple PCs | Track tap count, different MACs per count | Medium |
 
 ---
 
 ## References
 
 - [ESP8266 Arduino Core](https://arduino-esp8266.readthedocs.io/)
-- [Adafruit SSD1306](https://learn.adafruit.com/monochrome-oled-breakouts/overview)
+- [LiquidCrystal I2C Library](https://github.com/marcoschwartz/LiquidCrystal_I2C)
 - [WakeOnLan Library](https://github.com/Team-Groump/WakeOnLan)
 - [Wake-on-LAN RFC](https://tools.ietf.org/html/rfc5427)
+- [16x2 LCD Character Display Datasheet](https://cdn-shop.adafruit.com/datasheets/CharacterLCD_16x2.pdf)
 
 ---
 
-**Architecture version:** 1.0.0 (2025-07-05)
+**Architecture version:** 2.0.0 (2025-07-05) - Updated for 16x2 LCD hardware

@@ -1,17 +1,23 @@
 /**
  * @file ESP8266-Wake-on-LAN.ino
- * @brief Improved PC Remote Booter
+ * @brief NodeMCU ESP8266 + 16x2 I2C LCD Wake-on-LAN Remote Boot Button
  *
- * Refactored from original `button proj.txt` with:
- * - Replaced blocking delay() with millis() based timing
- * - Added touch sensor debouncing (original: none)
- * - Added WiFi auto-reconnect (original: none)
- * - Better error handling (original: infinite loops)
- * - State machine for cleaner flow
+ * Refactored from original `button proj.txt` for 16x2 I2C LCD hardware.
+ *
+ * Hardware:
+ * - NodeMCU ESP8266 (ESP-12E)
+ * - 16x2 I2C LCD display (PCF8574 backpack, address 0x27)
+ * - TTP223 capacitive touch sensor
+ *
+ * Features:
+ * - WiFi connection with auto-reconnect
+ * - 16x2 LCD status display (2 lines)
+ * - Touch sensor on D6 (GPIO12) with debouncing
+ * - Wake-on-LAN magic packet broadcasting
+ * - Non-blocking millis() based timing throughout
+ * - Comprehensive error handling
+ * - State machine design
  * - Doxygen documentation
- *
- * Original code had simple structure but used blocking delays throughout.
- * This version maintains compatibility while being production-ready.
  *
  * @author Original: Unknown | Refactored: Dhanush
  * @version 1.0.0
@@ -23,15 +29,14 @@
 #include <WiFiUdp.h>
 #include <WakeOnLan.h>
 #include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include <LiquidCrystal_I2C.h>
 
 #include "Config.h"
 
 // ============================================================================
 // Hardware Objects
 // ============================================================================
-Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
+LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, LCD_COLS, LCD_ROWS);
 WiFiUDP udp;
 WakeOnLan WOL(udp);
 
@@ -62,8 +67,8 @@ static const int DEBOUNCE_MS = TOUCH_DEBOUNCE_MS;
 // ============================================================================
 // Display Caching
 // ============================================================================
-static String lastDispStatus = "";
-static String lastDispAction = "";
+static String lastLine1 = "";
+static String lastLine2 = "";
 
 // ============================================================================
 // Error Tracking
@@ -73,7 +78,7 @@ static String errMsg = "";
 // ============================================================================
 // Function Prototypes
 // ============================================================================
-void disp(DispMode mode, const String& status = "", const String& action = "");
+void updateDisplay(DispMode mode, const String& line1 = "", const String& line2 = "");
 bool initDisplay();
 bool wifiConnect();
 void wifiMonitor();
@@ -87,25 +92,25 @@ void runStateMachine();
 // ============================================================================
 void setup() {
   Serial.begin(115200);
-  Serial.println(F("\n=== ESP8266 WOL (Refactored) ==="));
+  Serial.println(F("\n=== ESP8266 Wake-on-LAN (16x2 LCD) ==="));
 
   pinMode(TOUCH_PIN, INPUT);
 
   if (!initDisplay()) {
-    Serial.println(F("ERROR: OLED init failed"));
-    setError(F("Display Error"));
+    Serial.println(F("ERROR: LCD init failed"));
+    setError(F("LCD Error"));
     state = ERROR;
     return;
   }
 
-  disp(NORMAL, "", "Connecting...");
+  updateDisplay(NORMAL, "Connecting WiFi...", "");
 
   if (wifiConnect()) {
     state = READY;
     WOL.setRepeat(WOL_REPEAT_COUNT, WOL_REPEAT_DELAY);
     WOL.calculateBroadcastAddress(WiFi.localIP(), WiFi.subnetMask());
     Serial.println(F("WiFi connected. Ready."));
-    disp(NORMAL, "CONNECTED", "Ready to Touch!");
+    updateDisplay(NORMAL, "WiFi Connected", "Ready to Touch");
   } else {
     state = ERROR;
     setError(F("WiFi Failed"));
@@ -117,7 +122,6 @@ void setup() {
 // ============================================================================
 void loop() {
   wifiMonitor();
-
   runStateMachine();
 
   if (touchPressed() && state == READY && millis() >= cooldownEndMs) {
@@ -126,63 +130,73 @@ void loop() {
     cooldownEndMs = millis() + COOLDOWN_MS;
   }
 
-  // yield CPU, don't use delay()
+  // No delay() - allows WiFi background tasks
 }
 
 // ============================================================================
-// Display (Cached, no flicker)
+// Display Functions (16x2 LCD)
 // ============================================================================
-void disp(DispMode mode, const String& status, const String& action) {
-  String st, act;
+/**
+ * @brief Update LCD with caching to reduce flicker
+ *
+ * LCD layout:
+ * Line 1: Status (WiFi status or mode)
+ * Line 2: Current action/state
+ *
+ * Original OLED code cleared display every update causing flicker.
+ * This version only updates when content changes.
+ */
+void updateDisplay(DispMode mode, const String& line1, const String& line2) {
+  String l1, l2;
 
   switch (mode) {
     case NORMAL:
-      st = status.length() ? status : (WiFi.status()==WL_CONNECTED?"CONNECTED":"NO WiFi");
-      act = action.length() ? action : (state==READY?"Ready to Touch!":"Waiting...");
+      l1 = line1.length() ? line1 : (WiFi.status() == WL_CONNECTED ? "WiFi Connected" : "NO WiFi");
+      l2 = line2.length() ? line2 : (state == READY ? "Ready to Touch" : "Waiting...");
       break;
     case WAKING:
-      st = "CONNECTED";
-      act = "WAKING PC... 🔥";
+      l1 = "WiFi Connected";
+      l2 = "WAKING PC...";
       break;
     case ERR:
-      st = "ERROR";
-      act = errMsg;
+      l1 = "ERROR";
+      l2 = errMsg.length() ? errMsg : "Error";
       break;
   }
 
-  if (st != lastDispStatus || act != lastDispAction) {
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.println("PC REMOTE BOOTER");
-    display.drawLine(0, 14, OLED_WIDTH-1, 14, SSD1306_WHITE);
-    display.setCursor(0, 24);
-    display.print("WiFi: "); display.println(st);
-    display.setCursor(0, 45);
-    display.print("> "); display.println(act);
-    display.display();
-    lastDispStatus = st;
-    lastDispAction = act;
+  // Only update if changed (prevent flicker)
+  if (l1 != lastLine1 || l2 != lastLine2) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(l1);
+    lcd.setCursor(0, 1);
+    lcd.print(l2);
+
+    lastLine1 = l1;
+    lastLine2 = l2;
   }
+
   dispMode = mode;
 }
 
 // ============================================================================
-// Display Init
+// LCD Initialization
 // ============================================================================
 bool initDisplay() {
-  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_I2C_ADDRESS)) return false;
-  display.clearDisplay();
-  display.display();
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  delay(50); // Short delay for LCD to initialize (acceptable)
   return true;
 }
 
 // ============================================================================
-// WiFi Connect with Timeout (non-blocking style)
+// WiFi Connect with Timeout
 // ============================================================================
 bool wifiConnect() {
-  Serial.print(F("Connecting to ")); Serial.println(WIFI_SSID);
+  Serial.print(F("Connecting to WiFi: "));
+  Serial.println(WIFI_SSID);
+
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   wifiStartMs = millis();
@@ -197,15 +211,17 @@ bool wifiConnect() {
       Serial.print(F("."));
       lastDot = millis();
     }
-    delay(10);  // Small yield, acceptable during initial connect
+    delay(10); // Small yield, OK during initial connect
   }
+
   Serial.println();
-  Serial.print(F("IP: ")); Serial.println(WiFi.localIP());
+  Serial.print(F("Connected! IP: "));
+  Serial.println(WiFi.localIP());
   return true;
 }
 
 // ============================================================================
-// WiFi Auto-Reconnect (NEW)
+// WiFi Auto-Reconnect
 // ============================================================================
 void wifiMonitor() {
   if (state == ERROR || state == WAKING) return;
@@ -213,7 +229,7 @@ void wifiMonitor() {
   if (WiFi.status() != WL_CONNECTED) {
     if (state != WIFI_CONNECT) {
       Serial.println(F("WiFi lost, reconnecting..."));
-      disp(NORMAL, "", "Reconnecting...");
+      updateDisplay(NORMAL, "WiFi Disconnected", "Reconnecting...");
       state = WIFI_CONNECT;
       lastWifiCheckMs = millis();
     }
@@ -222,14 +238,14 @@ void wifiMonitor() {
       if (wifiConnect()) {
         state = READY;
         WOL.calculateBroadcastAddress(WiFi.localIP(), WiFi.subnetMask());
-        disp(NORMAL, "CONNECTED", "Ready to Touch!");
+        updateDisplay(NORMAL, "WiFi Connected", "Ready to Touch");
       }
     }
   }
 }
 
 // ============================================================================
-// Touch with Debounce (NEW)
+// Touch with Debounce
 // ============================================================================
 bool touchPressed() {
   int cur = digitalRead(TOUCH_PIN);
@@ -237,7 +253,7 @@ bool touchPressed() {
     if (millis() - lastTouchMs >= DEBOUNCE_MS) {
       lastTouchMs = millis();
       lastTouch = cur;
-      Serial.println(F("Touch!"));
+      Serial.println(F("Touch detected!"));
       return true;
     }
   }
@@ -249,15 +265,19 @@ bool touchPressed() {
 // Send Magic Packet
 // ============================================================================
 void sendWol() {
-  Serial.print(F("WOL to MAC: "));
+  Serial.print(F("Sending WOL to MAC: "));
   for (int i = 0; i < 6; i++) {
     if (i) Serial.print(F(":"));
     if (TARGET_MAC[i] < 0x10) Serial.print(F("0"));
     Serial.print(TARGET_MAC[i], HEX);
   }
   Serial.println();
+
   WOL.sendMagicPacket(TARGET_MAC);
-  Serial.println(F("Packet sent"));
+  Serial.println(F("Magic packet sent!"));
+
+  // Show "Packet Sent" briefly
+  updateDisplay(NORMAL, "Packet Sent!", "");
 }
 
 // ============================================================================
@@ -265,27 +285,27 @@ void sendWol() {
 // ============================================================================
 void setError(const String& msg) {
   errMsg = msg;
-  disp(ERR, "ERROR", msg);
+  updateDisplay(ERR, "ERROR", msg);
 }
 
 // ============================================================================
-// State Machine (replaces delay() in original)
+// State Machine
 // ============================================================================
 void runStateMachine() {
   if (state != WAKING) return;
 
-  // Show waking display once
-  static bool showedWaking = false;
-  if (!showedWaking) {
-    disp(WAKING);
+  static bool sent = false;
+  if (!sent) {
+    updateDisplay(WAKING);
     sendWol();
-    showedWaking = true;
+    sent = true;
   }
 
-  // After POST_WAKE_DELAY_MS, return to READY (non-blocking)
   if (millis() >= wakeEndMs) {
-    showedWaking = false;
+    sent = false;
     state = (WiFi.status() == WL_CONNECTED) ? READY : WIFI_CONNECT;
-    disp(NORMAL);
+    if (state == READY) {
+      updateDisplay(NORMAL, "WiFi Connected", "Ready to Touch");
+    }
   }
 }

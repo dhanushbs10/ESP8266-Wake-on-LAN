@@ -213,23 +213,32 @@ void loop() {
 
 ---
 
-## Custom Display Graphics
+## Custom Display Characters
 
-Show icons instead of text using `drawBitmap()`:
+The 16x2 LCD supports up to 8 custom 5x8 characters. Create a custom icon:
 
 ```cpp
-#include <bitmaps.h>  // Create your own 16x16 monochrome bitmaps
+// In setup() after lcd.init():
+byte smiley[8] = {
+  0b00000,
+  0b01010,
+  0b01010,
+  0b00000,
+  0b10001,
+  0b10001,
+  0b01110,
+  0b00000
+};
+lcd.createChar(0, smiley);  // Slot 0 (0-7 available)
 
-void updateDisplay(DisplayMode mode) {
-  switch (mode) {
-    case DisplayMode::WAKING:
-      display.drawBitmap(0, 0, icon_wifi, 16, 16, SSD1306_WHITE);
-      break;
-  }
-}
+// Use in display:
+lcd.setCursor(15,1);
+lcd.write(byte(0));  // Prints custom character
 ```
 
-Generate bitmaps at: [LCD Assistant](http://en.radzio.dxp.pl/bitmap_converter/)
+Design characters using [LCD Character Generator](https://www.quinapalus.com/hd44780udg.html) or draw them manually.
+
+---
 
 ---
 
@@ -269,7 +278,7 @@ void setup() {
 
 Current implementation sends WOL to anyone who touches. Add simple challenge-response:
 
-1. ESP generates random 4-byte nonce, displays on OLED
+1. ESP generates random 4-byte nonce, displays on LCD
 2. User enters via Serial (or password button sequence)
 3. ESP only sends WOL if correct
 
@@ -313,7 +322,7 @@ For a permanent, compact device:
 2. **2-layer board** minimum
 3. **Components:**
    - ESP-12E module
-   - SSD1306 OLED (with pin headers)
+   - 16x2 LCD with PCF8574 backpack (with pin headers)
    - 3.3V regulator (if USB not used)
    - Touch header
    - Status LED
@@ -333,7 +342,7 @@ Before flashing 10+ devices:
 - [ ] WiFi credentials validated
 - [ ] MAC address correct
 - [ ] Touch debounce tuned (adjust `TOUCH_DEBOUNCE_MS`)
-- [ ] OLED contrast adjusted (if display has pot)
+- [ ] LCD contrast adjusted (if display has pot)
 - [ ] Auto-reconnect tested (unplug WiFi for 30s)
 - [ ] Power consumption measured (should be <80mA)
 - [ ] IP address reserved in router (optional but helpful)

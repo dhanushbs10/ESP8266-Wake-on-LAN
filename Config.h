@@ -2,12 +2,12 @@
  * @file Config.h
  * @brief User configuration for ESP8266 Wake-on-LAN project
  *
- * This file contains all user-specific settings that need to be customized
- * for your local network and hardware setup.
+ * This file contains all user-specific settings for the NodeMCU ESP8266
+ * with 16x2 I2C LCD display and TTP223 touch sensor.
  *
  * IMPORTANT: Do not share this file or commit sensitive information (WiFi password,
- * MAC addresses) to public repositories. This file should be kept private or
- * values should be sourced from environment variables in production builds.
+ * MAC addresses) to public repositories. Keep this file private or use environment
+ * variables in production.
  */
 
 #pragma once
@@ -32,52 +32,53 @@ const char* WIFI_PASSWORD = "YourWiFiPassword";
  * This is the network interface MAC address of the computer you want to wake.
  * Format: {0xXX, 0xXX, 0xXX, 0xXX, 0xXX, 0xXX}
  *
- * Find your MAC address in Windows: ipconfig /all | findstr "Physical"
- * Find on Linux: ip link show
- * Find on macOS: ifconfig | grep "ether"
+ * Find your MAC address:
+ * - Windows: ipconfig /all | findstr "Physical"
+ * - Linux: ip link show
+ * - macOS: ifconfig | grep "ether"
  */
 const byte TARGET_MAC[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
 // ============================================================================
-// Hardware Pin Configuration
+// Hardware Pin Configuration (NodeMCU ESP8266)
 // ============================================================================
 
 /**
- * @brief GPIO pin connected to the touch sensor/button
+ * @brief GPIO pin connected to the TTP223 touch sensor output
  *
- * NodeMCU/ESP8266 pin mapping:
- * - D0 = GPIO16
- * - D1 = GPIO5
- * - D2 = GPIO4
- * - D3 = GPIO0
- * - D4 = GPIO2
- * - D5 = GPIO14  (commonly used for touch sensors)
- * - D6 = GPIO12
- * - D7 = GPIO13
- * - D8 = GPIO15
- */
-const int TOUCH_PIN = 14;  // GPIO14 (NodeMCU D5)
-
-// ============================================================================
-// OLED Display Configuration
-// ============================================================================
-
-/**
- * @brief I2C address of the SSD1306 OLED display
+ * NodeMCU pin mapping:
+ * - D1 = GPIO5  (I2C SCL)
+ * - D2 = GPIO4  (I2C SDA)
+ * - D6 = GPIO12 (Touch sensor OUT)
  *
- * Most SSD1306 displays use 0x3C or 0x3D. Check your display's documentation.
+ * Power: Touch VCC → 3.3V, Touch GND → GND
  */
-const int OLED_I2C_ADDRESS = 0x3C;
+const int TOUCH_PIN = 12;  // GPIO12 (NodeMCU D6)
+
+// ============================================================================
+// LCD Display Configuration (16x2 I2C)
+// ============================================================================
 
 /**
- * @brief Width of the OLED display in pixels
+ * @brief I2C address of the 16x2 LCD display
+ *
+ * Common I2C addresses for 16x2 LCD with PCF8574 backpack:
+ * - 0x27 (most common)
+ * - 0x3F (some modules)
+ *
+ * Run an I2C scanner sketch if unsure.
  */
-const int OLED_WIDTH = 128;
+const int LCD_I2C_ADDRESS = 0x27;
 
 /**
- * @brief Height of the OLED display in pixels
+ * @brief Number of columns on the LCD (16 for 16x2)
  */
-const int OLED_HEIGHT = 64;
+const int LCD_COLS = 16;
+
+/**
+ * @brief Number of rows on the LCD (2 for 16x2)
+ */
+const int LCD_ROWS = 2;
 
 // ============================================================================
 // Wake-on-LAN Configuration
